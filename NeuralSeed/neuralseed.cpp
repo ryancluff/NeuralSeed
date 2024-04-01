@@ -12,18 +12,22 @@ using namespace terrarium;  // This is important for mapping the correct control
 
 // Declare a local daisy_petal for hardware access
 DaisyPetal hw;
-Parameter inLevel, modelParam, modelParam2, modelParam3, outLevel, wetDryMix;
-bool      bypass;
-int       modelInSize;
-unsigned int       modelIndex;
+Parameter inLevel, modelParam, modelParam2, modelParam3, outLevel, wetDryMix, noiseFilterFreq, lowPassFilterFreq;
+float inLevelf, modelParamf, modelParam2f, modelParam3f, outLevelf, wetDryMixf, lowPassFilterFreqf;
+
+bool                bypass;
+int                 modelInSize;
+unsigned int        modelIndex;
+float brightness1;
+float brightness2;
 
 Led led1, led2;
 
 static CrossFade cfade; // For blending the wet/dry signals while maintaining constant volume
 
 // Each EQ will be turned on/off independently
-bool       eqOn[4];
-int        freqs[4];
+bool       eqOn[2];
+int        freqs[2];
 
 // Our bandpass filter for each EQ boost switch
 struct Filter
@@ -47,24 +51,26 @@ struct Filter
     }
 };
 
-Filter filters[4];
+Filter filters[2];
+// Filter noiseFilter;
+Svf lowPassFilter;
 
 // The center frequency of each filter (change as desired)
 //  Currently set at the lower end of the spectrum
 void InitFreqs()
 {
-    freqs[0] = 120;
-    freqs[1] = 400;
-    freqs[2] = 800;
-    freqs[3] = 1600;
+    freqs[0] = 60;
+    freqs[1] = 120;
 }
 
 void InitFilters(float samplerate)
 {
-    for(int i = 0; i < 4; i++)
+    for(int i = 0; i < 2; i++)
     {
         filters[i].Init(samplerate, freqs[i]);
     }
+
+    lowPassFilter.Init(samplerate);
 }
 
 
@@ -114,7 +120,7 @@ void changeModel()
       gru.setBVals(model_collection[modelIndex].rec_bias);
       dense.setWeights(model_collection[modelIndex].lin_weight);
       dense.setBias(model_collection[modelIndex].lin_bias.data());
-      led2.Set(0.3f);
+      brightness2 = 0.3f;
 
     } else if (model_collection[modelIndex].rec_weight_ih_l0.size() == 3) {
       auto& gru = (model3).template get<0>();
@@ -125,7 +131,7 @@ void changeModel()
       gru.setBVals(model_collection[modelIndex].rec_bias);
       dense.setWeights(model_collection[modelIndex].lin_weight);
       dense.setBias(model_collection[modelIndex].lin_bias.data());
-      led2.Set(0.65f);
+      brightness2 = 0.65f;
 
     } else if (model_collection[modelIndex].rec_weight_ih_l0.size() == 4) {
       auto& gru = (model4).template get<0>();
@@ -136,7 +142,7 @@ void changeModel()
       gru.setBVals(model_collection[modelIndex].rec_bias);
       dense.setWeights(model_collection[modelIndex].lin_weight);
       dense.setBias(model_collection[modelIndex].lin_bias.data());
-      led2.Set(1.0f);
+      brightness2 = 1.0f;
 
     } else {
       auto& gru = (model).template get<0>();
@@ -147,7 +153,7 @@ void changeModel()
       gru.setBVals(model_collection[modelIndex].rec_bias);
       dense.setWeights(model_collection[modelIndex].lin_weight);
       dense.setBias(model_collection[modelIndex].lin_bias.data());
-      led2.Set(0.0f);
+      brightness2 = 0.0f;
     }
 
     // Initialize Neural Net
@@ -162,47 +168,88 @@ void changeModel()
     }
 }
 
+
+void UpdateLeds() {
+    led1.Set(brightness1);
+    led2.Set(brightness2);
+    led1.Update();
+    led2.Update();
+}
+
+void UpdateSwitches()
+{
+
+}
+
+void UpdateButtons()
+{
+    //switch1 pressed
+    if(hw.switches[Terrarium::FOOTSWITCH_1].RisingEdge())
+    {
+        bypass = !bypass;
+        brightness1 = bypass ? 0.0f : 1.0f;
+    }
+
+    //switch2 pressed
+    if(hw.switches[Terrarium::FOOTSWITCH_2].RisingEdge())
+    {
+        changeModel();
+    }
+}
+
+
+void UpdateKnobs()
+{
+    inLevelf = inLevel.Process();
+    outLevelf = outLevel.Process(); 
+    wetDryMixf = wetDryMix.Process();
+    modelParamf = modelParam.Process();
+    modelParam2f = modelParam2.Process();
+    modelParam3f = modelParam3.Process();
+    lowPassFilterFreqf = lowPassFilterFreq.Process();
+}
+
+
+void Controls()
+{
+    hw.ProcessAnalogControls();
+    hw.ProcessDigitalControls();
+
+    UpdateKnobs();
+
+    UpdateButtons();
+
+    UpdateSwitches();
+
+    UpdateLeds();
+}
+
 // This runs at a fixed rate, to prepare audio samples
 static void AudioCallback(AudioHandle::InputBuffer  in,
                           AudioHandle::OutputBuffer out,
                           size_t                    size)
 {
-    //hw.ProcessAllControls();
-    hw.ProcessAnalogControls();
-    hw.ProcessDigitalControls();
-    led1.Update();
-    led2.Update();
+    float samplerate = hw.AudioSampleRate();
 
-    float in_level = inLevel.Process();
-    float model_param = modelParam.Process();
-    float model_param2 = modelParam2.Process();
-    float model_param3 = modelParam3.Process();
-    float out_level = outLevel.Process(); 
-    float wet_dry_mix = wetDryMix.Process();
+    Controls();
+
+    //hw.ProcessAllControls();
+    // hw.ProcessAnalogControls();
+    // hw.ProcessDigitalControls();
+    // led1.Update();
+    // led2.Update();
+
 	float final_mix;
 
-    cfade.SetPos(wet_dry_mix);
+    cfade.SetPos(wetDryMixf);
 
     float input_arr[4] = { 0.0, 0.0, 0.0, 0.0 };
-
-    // (De-)Activate bypass and toggle LED when left footswitch is pressed
-    if(hw.switches[Terrarium::FOOTSWITCH_1].RisingEdge())
-    {
-        bypass = !bypass;
-        led1.Set(bypass ? 0.0f : 1.0f);
-    }
-
-    // Cycle available models
-    if(hw.switches[Terrarium::FOOTSWITCH_2].RisingEdge())
-    {  
-        changeModel();
-    }
 
     // EQ Switches
     //     - The .Pressed() function below counts an 'ON' switch as pressed.
     //     - Each EQ boost is controlled by it's own switch
     int switches[4] = {Terrarium::SWITCH_1, Terrarium::SWITCH_2, Terrarium::SWITCH_3, Terrarium::SWITCH_4}; // Can this be moved elsewhere?
-    for(int i=0; i<4; i++)
+    for(int i=0; i<2; i++)
         eqOn[i] = hw.switches[switches[i]].Pressed();
 
     for(size_t i = 0; i < size; i++)
@@ -218,25 +265,25 @@ static void AudioCallback(AudioHandle::InputBuffer  in,
         else
         {
             if (modelInSize == 2) {
-                input_arr[0] = input * in_level;           // Set input array with input level adjustment
-                input_arr[1] = model_param;
+                input_arr[0] = input * inLevelf;           // Set input array with input level adjustment
+                input_arr[1] = modelParamf;
                 wet = model2.forward (input_arr) + input;  // Run Parameterized Model and add Skip Connection
                 
             } else if (modelInSize == 3) {
-                input_arr[0] = input * in_level;
-                input_arr[1] = model_param;
-		        input_arr[2] = model_param2;
+                input_arr[0] = input * inLevelf;
+                input_arr[1] = modelParamf;
+		        input_arr[2] = modelParam2f;
                 wet = model3.forward (input_arr) + input;  // Run Parameterized Model and add Skip Connection
 
             } else if (modelInSize == 4) {
-                input_arr[0] = input * in_level;
-                input_arr[1] = model_param;
-		        input_arr[2] = model_param2;
-                input_arr[3] = model_param3;
+                input_arr[0] = input * inLevelf;
+                input_arr[1] = modelParamf;
+		        input_arr[2] = modelParam2f;
+                input_arr[3] = modelParam3f;
                 wet = model4.forward (input_arr) + input;  // Run Parameterized Model and add Skip Connection
 
             } else {
-                input_arr[0] = input * in_level;           
+                input_arr[0] = input * inLevelf;           
                 wet = model.forward (input_arr) + input;   // Run Model and add Skip Connection
             }
 
@@ -247,7 +294,7 @@ static void AudioCallback(AudioHandle::InputBuffer  in,
             // Process EQ 
             float sig = 0.f;
             bool noEQ = true;
-            for(int j = 0; j < 4; j++)
+            for(int j = 0; j < 2; j++)
             {
                 if (eqOn[j]) {
                     sig += filters[j].Process(wet);
@@ -258,11 +305,24 @@ static void AudioCallback(AudioHandle::InputBuffer  in,
 
             if(!noEQ) {
                 wet += sig;
-            } 
+            }
+
+            if (hw.switches[switches[3]].Pressed()) {
+                lowPassFilter.SetFreq(lowPassFilterFreqf * samplerate);
+                lowPassFilter.Process(wet);
+                wet = lowPassFilter.Notch();
+            }
+
+            if (hw.switches[switches[3]].Pressed()) {
+                lowPassFilter.SetFreq(lowPassFilterFreqf * samplerate);
+                lowPassFilter.Process(wet);
+                wet = lowPassFilter.Notch();
+            }
+            
             
             final_mix = cfade.Process(input, wet); // crossfade wet/dry at constant power (consistent volume)
 
-            out[0][i] = final_mix * out_level;                           // Set output level
+            out[0][i] = final_mix * outLevelf;                           // Set output level
         }
 
         // Copy left channel to right channel
@@ -278,19 +338,25 @@ static void AudioCallback(AudioHandle::InputBuffer  in,
 int main(void)
 {
     float samplerate;
+    // float blocksize;
 
     hw.Init();
     samplerate = hw.AudioSampleRate();
+    // blocksize = hw.AudioBlockSize();
 
     setupWeights();
-    //hw.SetAudioBlockSize(4);
+    // hw.SetAudioSampleRate(SaiHandle::Config::SampleRate::SAI_96KHZ);
+    // hw.SetAudioBlockSize(48);
 
     inLevel.Init(hw.knob[Terrarium::KNOB_1], 0.0f, 3.0f, Parameter::LINEAR);
-    wetDryMix.Init(hw.knob[Terrarium::KNOB_2], 0.0f, 1.0f, Parameter::LINEAR);
     outLevel.Init(hw.knob[Terrarium::KNOB_3], 0.0f, 1.0f, Parameter::LINEAR); 
+    wetDryMix.Init(hw.knob[Terrarium::KNOB_2], 0.0f, 1.0f, Parameter::LINEAR);
     modelParam.Init(hw.knob[Terrarium::KNOB_4], 0.0f, 1.0f, Parameter::LINEAR);
     modelParam2.Init(hw.knob[Terrarium::KNOB_5], 0.0f, 1.0f, Parameter::LINEAR);
-    modelParam3.Init(hw.knob[Terrarium::KNOB_6], 0.0f, 1.0f, Parameter::LINEAR); 
+    modelParam3.Init(hw.knob[Terrarium::KNOB_6], 0.0f, 1.0f, Parameter::LINEAR);
+    lowPassFilterFreq.Init(hw.knob[Terrarium::KNOB_6], 0.0f, 1.0f, Parameter::EXPONENTIAL);
+
+    // modelParam3.Init(hw.knob[Terrarium::KNOB_6], 0.0f, 1.0f, Parameter::LINEAR);
 
     // Initialize the correct model
     modelIndex = -1;
@@ -307,10 +373,13 @@ int main(void)
     // Init the LEDs and set activate bypass
     led1.Init(hw.seed.GetPin(Terrarium::LED_1),false);
     led1.Update();
-    bypass = true;
-
     led2.Init(hw.seed.GetPin(Terrarium::LED_2),false);
     led2.Update();
+
+    bypass = true;
+    brightness1 = 0.0f;
+    brightness2 = 0.1f;
+
 
     hw.StartAdc();
     hw.StartAudio(AudioCallback);
